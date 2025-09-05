@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "kulturerbe-mcp-server": {
+      "command": "/home/rklug/kulturerbe_mcp/run_server.sh",
+      "args": [],
+      "cwd": "/home/rklug/kulturerbe_mcp",
+      "env": {
+        "VIRTUAL_ENV": "/home/rklug/kulturerbe_mcp/.venv",
+        "PATH": "/home/rklug/kulturerbe_mcp/.venv/bin:$PATH"
+      }
+    }
+  }
+}
