@@ -156,16 +156,25 @@ class KulturpoolClient:
             if not self.BASE_URL.startswith("https://api.kulturpool.at"):
                 raise ValueError("Only Kulturpool API allowed")
             
-            # Special handling for filter_by parameter that needs unencoded characters
+            # Special handling for filter_by and sort_by parameters that need unencoded characters
+            special_params = {}
             if 'filter_by' in params:
-                filter_value = params.pop('filter_by')
-                # Build URL manually with proper encoding for filter_by
+                special_params['filter_by'] = params.pop('filter_by')
+            if 'sort_by' in params:
+                special_params['sort_by'] = params.pop('sort_by')
+                
+            if special_params:
+                # Build URL manually with proper encoding for special parameters
                 base_url = f"{self.BASE_URL}?{urlencode(params)}" if params else self.BASE_URL
                 separator = "&" if "?" in base_url else "?"
                 
-                # Encode filter_by value while preserving :, =, & characters
-                encoded_filter = quote(filter_value, safe='=:&')
-                full_url = f"{base_url}{separator}filter_by={encoded_filter}"
+                # Add special parameters while preserving :, =, & characters
+                special_parts = []
+                for key, value in special_params.items():
+                    encoded_value = quote(value, safe='=:&')
+                    special_parts.append(f"{key}={encoded_value}")
+                
+                full_url = f"{base_url}{separator}{'&'.join(special_parts)}"
                 response = self.session.get(full_url, timeout=self.TIMEOUT)
             else:
                 response = self.session.get(
@@ -204,6 +213,7 @@ class KulturpoolSearchParams(BaseModel):
     date_from: Optional[int] = Field(None)
     date_to: Optional[int] = Field(None)
     limit: int = Field(default=15, ge=1, le=20)
+    sort_by: Optional[str] = Field(None)
     
     # Known institutions whitelist
     KNOWN_INSTITUTIONS: ClassVar[List[str]] = [
@@ -214,6 +224,14 @@ class KulturpoolSearchParams(BaseModel):
     
     # Known object types
     KNOWN_TYPES: ClassVar[List[str]] = ["IMAGE", "TEXT", "SOUND", "VIDEO", "3D"]
+    
+    # Known sort fields
+    KNOWN_SORT_FIELDS: ClassVar[List[str]] = [
+        "titleSort:asc", "titleSort:desc",
+        "dataProvider:asc", "dataProvider:desc", 
+        "dateMin:asc", "dateMin:desc",
+        "dateMax:asc", "dateMax:desc"
+    ]
     
     @field_validator('query')
     @classmethod  
@@ -232,6 +250,13 @@ class KulturpoolSearchParams(BaseModel):
     def validate_types(cls, v):
         if v:
             return [t for t in v if t in cls.KNOWN_TYPES]
+        return v
+    
+    @field_validator('sort_by')
+    @classmethod
+    def validate_sort_by(cls, v):
+        if v and v not in cls.KNOWN_SORT_FIELDS:
+            raise ValueError(f"sort_by must be one of: {', '.join(cls.KNOWN_SORT_FIELDS)}")
         return v
 
 class KulturpoolDetailsParams(BaseModel):
@@ -424,6 +449,9 @@ async def kulturpool_search_filtered_handler(arguments: Dict[str, Any]) -> List[
     
     if filters:
         api_params['filter_by'] = ' && '.join(filters)
+    
+    if params.sort_by:
+        api_params['sort_by'] = params.sort_by
     
     # Execute API call
     response_data = api_client.search(api_params)
@@ -638,6 +666,11 @@ async def list_tools() -> List[Tool]:
                         "minimum": 1,
                         "maximum": 20,
                         "default": 15
+                    },
+                    "sort_by": {
+                        "type": "string",
+                        "description": "Sort results by field (titleSort:asc, titleSort:desc, dataProvider:asc, dataProvider:desc, dateMin:asc, dateMin:desc, dateMax:asc, dateMax:desc)",
+                        "enum": ["titleSort:asc", "titleSort:desc", "dataProvider:asc", "dataProvider:desc", "dateMin:asc", "dateMin:desc", "dateMax:asc", "dateMax:desc"]
                     }
                 },
                 "required": ["query"]
