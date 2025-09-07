@@ -90,6 +90,43 @@ class RateLimiter:
 rate_limiter = RateLimiter()
 
 # ==============================================================================
+# IMAGE URL ENHANCEMENT HELPERS
+# ==============================================================================
+
+def _get_large_image_url(preview_url: str) -> str:
+    """Extract large image URL with fallback logic"""
+    if not preview_url:
+        return ""
+    
+    # Pattern: replace _medium.webp with _large.webp or similar
+    if "_medium.webp" in preview_url:
+        return preview_url.replace("_medium.webp", "_large.webp")
+    elif "_small.webp" in preview_url:
+        return preview_url.replace("_small.webp", "_large.webp")
+    elif ".webp" in preview_url and "_medium" not in preview_url:
+        # If no size indicator, try adding _large before extension
+        return preview_url.replace(".webp", "_large.webp")
+    
+    return preview_url  # Fallback to original
+
+def _get_medium_image_url(preview_url: str) -> str:
+    """Extract medium image URL with fallback logic"""
+    if not preview_url:
+        return ""
+    
+    # Pattern: replace _small.webp with _medium.webp or similar  
+    if "_small.webp" in preview_url:
+        return preview_url.replace("_small.webp", "_medium.webp")
+    elif "_large.webp" in preview_url:
+        return preview_url.replace("_large.webp", "_medium.webp")
+    elif ".webp" in preview_url and "_medium" not in preview_url:
+        # If no size indicator, assume it's already medium or add _medium
+        if "_" not in preview_url.split("/")[-1].split(".")[0]:
+            return preview_url.replace(".webp", "_medium.webp")
+    
+    return preview_url  # Fallback to original
+
+# ==============================================================================
 # KULTURPOOL API CLIENT
 # ==============================================================================
 
@@ -263,7 +300,9 @@ class ResponseProcessor:
                 "creator": doc.get('creator', ['Unbekannt'])[0] if doc.get('creator') else 'Unbekannt', 
                 "institution": doc.get('dataProvider', 'Unbekannt'),
                 "type": doc.get('edmType', 'Unbekannt'),
-                "preview_url": doc.get('previewImage', '')
+                "preview_url": doc.get('previewImage', ''),
+                "large_image": _get_large_image_url(doc.get('previewImage', '')),
+                "medium_image": _get_medium_image_url(doc.get('previewImage', ''))
             }
             
             # Add date if available
@@ -359,7 +398,7 @@ async def kulturpool_search_filtered_handler(arguments: Dict[str, Any]) -> List[
     # Object type filters - multiple types as separate filters  
     if params.object_types:
         for obj_type in params.object_types:
-            filters.append(f"edmType:={obj_type}")
+            filters.append(f"edmType:{obj_type}")
     
     # Date range filters
     if params.date_from:
@@ -398,6 +437,8 @@ async def kulturpool_search_filtered_handler(arguments: Dict[str, Any]) -> List[
             "description": doc.get('description', [''])[0][:200] if doc.get('description') else '',
             "subjects": doc.get('subject', [])[:5],
             "preview_image": doc.get('previewImage'),
+            "large_image": _get_large_image_url(doc.get('previewImage', '')),
+            "medium_image": _get_medium_image_url(doc.get('previewImage', '')),
             "detail_url": doc.get('isShownAt')
         }
         
