@@ -13,6 +13,7 @@ import json
 import time
 from collections import defaultdict, deque
 from datetime import datetime
+from urllib.parse import quote, urlencode
 from typing import Any, Dict, List, Optional, ClassVar
 
 import requests
@@ -130,7 +131,7 @@ def _extract_image_urls(doc: Dict) -> Dict[str, str]:
 class KulturpoolClient:
     """Secure HTTP client for Kulturpool API"""
     
-    BASE_URL = "https://api.kulturpool.at/search"
+    BASE_URL = "https://api.kulturpool.at/search/"
     TIMEOUT = 10
     
     def __init__(self):
@@ -155,11 +156,23 @@ class KulturpoolClient:
             if not self.BASE_URL.startswith("https://api.kulturpool.at"):
                 raise ValueError("Only Kulturpool API allowed")
             
-            response = self.session.get(
-                self.BASE_URL,
-                params=params,
-                timeout=self.TIMEOUT
-            )
+            # Special handling for filter_by parameter that needs unencoded characters
+            if 'filter_by' in params:
+                filter_value = params.pop('filter_by')
+                # Build URL manually with proper encoding for filter_by
+                base_url = f"{self.BASE_URL}?{urlencode(params)}" if params else self.BASE_URL
+                separator = "&" if "?" in base_url else "?"
+                
+                # Encode filter_by value while preserving :, =, & characters
+                encoded_filter = quote(filter_value, safe='=:&')
+                full_url = f"{base_url}{separator}filter_by={encoded_filter}"
+                response = self.session.get(full_url, timeout=self.TIMEOUT)
+            else:
+                response = self.session.get(
+                    self.BASE_URL,
+                    params=params,
+                    timeout=self.TIMEOUT
+                )
             response.raise_for_status()
             return response.json()
             
@@ -406,8 +419,7 @@ async def kulturpool_search_filtered_handler(arguments: Dict[str, Any]) -> List[
     # Build API parameters
     api_params = {
         'q': params.query,
-        'per_page': params.limit,
-        'sort_by': '_score:desc'
+        'per_page': params.limit
     }
     
     if filters:
