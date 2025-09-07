@@ -90,41 +90,38 @@ class RateLimiter:
 rate_limiter = RateLimiter()
 
 # ==============================================================================
-# IMAGE URL ENHANCEMENT HELPERS
+# IMAGE URL HELPERS - USING OFFICIAL API FIELDS
 # ==============================================================================
 
-def _get_large_image_url(preview_url: str) -> str:
-    """Extract large image URL with fallback logic"""
-    if not preview_url:
-        return ""
+def _extract_image_urls(doc: Dict) -> Dict[str, str]:
+    """Extract image URLs from official API fields with fallback logic"""
+    preview_url = doc.get('previewImage', '')
     
-    # Pattern: replace _medium.webp with _large.webp or similar
-    if "_medium.webp" in preview_url:
-        return preview_url.replace("_medium.webp", "_large.webp")
-    elif "_small.webp" in preview_url:
-        return preview_url.replace("_small.webp", "_large.webp")
-    elif ".webp" in preview_url and "_medium" not in preview_url:
-        # If no size indicator, try adding _large before extension
-        return preview_url.replace(".webp", "_large.webp")
+    # Try official API fields first
+    large_image = doc.get('isShownBy', '')
+    medium_image = doc.get('object', '')
     
-    return preview_url  # Fallback to original
-
-def _get_medium_image_url(preview_url: str) -> str:
-    """Extract medium image URL with fallback logic"""
-    if not preview_url:
-        return ""
+    # Fallback to URL manipulation if API fields are empty
+    if not large_image and preview_url:
+        if "_medium.webp" in preview_url:
+            large_image = preview_url.replace("_medium.webp", "_large.webp")
+        elif ".webp" in preview_url and "_medium" not in preview_url:
+            large_image = preview_url.replace(".webp", "_large.webp")
+        else:
+            large_image = preview_url  # Use preview as fallback
     
-    # Pattern: replace _small.webp with _medium.webp or similar  
-    if "_small.webp" in preview_url:
-        return preview_url.replace("_small.webp", "_medium.webp")
-    elif "_large.webp" in preview_url:
-        return preview_url.replace("_large.webp", "_medium.webp")
-    elif ".webp" in preview_url and "_medium" not in preview_url:
-        # If no size indicator, assume it's already medium or add _medium
-        if "_" not in preview_url.split("/")[-1].split(".")[0]:
-            return preview_url.replace(".webp", "_medium.webp")
+    if not medium_image and preview_url:
+        if "_small.webp" in preview_url:
+            medium_image = preview_url.replace("_small.webp", "_medium.webp")
+        else:
+            medium_image = preview_url  # Use preview as fallback
     
-    return preview_url  # Fallback to original
+    return {
+        "preview_url": preview_url,
+        "large_image": large_image,
+        "medium_image": medium_image,
+        "iiif_manifest": doc.get('iiifManifest', '')
+    }
 
 # ==============================================================================
 # KULTURPOOL API CLIENT
@@ -300,10 +297,10 @@ class ResponseProcessor:
                 "creator": doc.get('creator', ['Unbekannt'])[0] if doc.get('creator') else 'Unbekannt', 
                 "institution": doc.get('dataProvider', 'Unbekannt'),
                 "type": doc.get('edmType', 'Unbekannt'),
-                "preview_url": doc.get('previewImage', ''),
-                "large_image": _get_large_image_url(doc.get('previewImage', '')),
-                "medium_image": _get_medium_image_url(doc.get('previewImage', ''))
             }
+            
+            # Add image URLs using official API fields
+            sample.update(_extract_image_urls(doc))
             
             # Add date if available
             if date_min := doc.get('dateMin'):
@@ -398,7 +395,7 @@ async def kulturpool_search_filtered_handler(arguments: Dict[str, Any]) -> List[
     # Object type filters - multiple types as separate filters  
     if params.object_types:
         for obj_type in params.object_types:
-            filters.append(f"edmType:{obj_type}")
+            filters.append(f"edmType:={obj_type}")
     
     # Date range filters
     if params.date_from:
@@ -436,11 +433,11 @@ async def kulturpool_search_filtered_handler(arguments: Dict[str, Any]) -> List[
             "type": doc.get('edmType'),
             "description": doc.get('description', [''])[0][:200] if doc.get('description') else '',
             "subjects": doc.get('subject', [])[:5],
-            "preview_image": doc.get('previewImage'),
-            "large_image": _get_large_image_url(doc.get('previewImage', '')),
-            "medium_image": _get_medium_image_url(doc.get('previewImage', '')),
             "detail_url": doc.get('isShownAt')
         }
+        
+        # Add image URLs using official API fields
+        result_obj.update(_extract_image_urls(doc))
         
         # Add formatted date
         if date_min := doc.get('dateMin'):
@@ -516,7 +513,6 @@ async def kulturpool_get_details_handler(arguments: Dict[str, Any]) -> List[Text
                 "extent": doc.get('extent', []),
                 "language": doc.get('language', []),
                 "rights": doc.get('edmRightsName'),
-                "preview_image": doc.get('previewImage'),
                 "detail_url": doc.get('isShownAt'),
                 "source_url": doc.get('hasView', []),
                 "metadata": {
@@ -527,6 +523,9 @@ async def kulturpool_get_details_handler(arguments: Dict[str, Any]) -> List[Text
                     "relation": doc.get('relation', [])[:5]
                 }
             }
+            
+            # Add image URLs using official API fields
+            detailed_obj.update(_extract_image_urls(doc))
             
             # Format dates
             for date_field in ['date_created', 'date_end']:
