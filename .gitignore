@@ -69,3 +69,6 @@ dmypy.json
 
 # Profiling data
 .prof
+
+# Project specific
+archiv/
