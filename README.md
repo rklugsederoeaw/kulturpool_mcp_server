@@ -339,7 +339,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Development Credits
 
-This MCP server was developed by **Robert Klugseder** (Austrian Academy of Sciences - Austrian Centre for Digital Humanities, [ÖAW-ACDH-CH](https://www.oeaw.ac.at/acdh/)) using **Vibe Coding** methodologies with assistance from **Claude Sonnet 4** via the **Claude Code CLI**.
+This MCP server was developed at the [ÖAW-ACDH](https://www.oeaw.ac.at/acdh/) using **Vibe Coding** methodologies with assistance from **Claude Sonnet 4** via the **Claude Code CLI**.
 
 ## ⚠️ Beta Disclaimer
 
