@@ -413,8 +413,20 @@ class KulturpoolClient:
             return cached_response
 
         try:
-            response = self.session.get(url, params=params, timeout=30)
-            response.raise_for_status()
+            # Try HEAD request first for metadata-only retrieval
+            try:
+                response = self.session.head(url, params=params, timeout=30)
+                response.raise_for_status()
+                logger.debug("Asset metadata retrieved via HEAD request")
+            except (requests.RequestException, requests.HTTPError):
+                # Fallback to streaming GET with immediate close
+                logger.debug("HEAD request failed, falling back to streaming GET")
+                response = self.session.get(url, params=params, timeout=30, stream=True)
+                response.raise_for_status()
+                # Close the response immediately to avoid downloading body
+                response.close()
+                logger.debug("Asset metadata retrieved via streaming GET (closed immediately)")
+
             asset_data = {
                 "asset_id": asset_id,
                 "url": response.url,
