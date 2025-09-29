@@ -1,13 +1,51 @@
 {
-  "mcpServers": {
+  "claude_desktop_windows_wsl": {
     "kulturerbe-mcp-server": {
-      "command": "/home/rklug/kulturerbe_mcp/run_server.sh",
-      "args": [],
-      "cwd": "/home/rklug/kulturerbe_mcp",
+      "command": "wsl",
+      "args": ["-e", "/home/username/kulturerbe_mcp/run_server.sh"],
+      "cwd": "\\\\wsl$\\Ubuntu\\home\\username\\kulturerbe_mcp",
       "env": {
-        "VIRTUAL_ENV": "/home/rklug/kulturerbe_mcp/.venv",
-        "PATH": "/home/rklug/kulturerbe_mcp/.venv/bin:$PATH"
+        "VIRTUAL_ENV": "/home/username/kulturerbe_mcp/.venv",
+        "PATH": "/home/username/kulturerbe_mcp/.venv/bin:$PATH"
       }
     }
+  },
+
+  "claude_code_wsl": {
+    "kulturerbe-mcp-server": {
+      "command": "/home/username/kulturerbe_mcp/run_server.sh",
+      "args": [],
+      "cwd": "/home/username/kulturerbe_mcp",
+      "env": {
+        "VIRTUAL_ENV": "/home/username/kulturerbe_mcp/.venv",
+        "PATH": "/home/username/kulturerbe_mcp/.venv/bin:$PATH"
+      }
+    }
+  },
+
+  "claude_desktop_windows_native": {
+    "kulturerbe-mcp-server": {
+      "command": "python",
+      "args": ["C:\\path\\to\\kulturerbe_mcp\\server.py"],
+      "cwd": "C:\\path\\to\\kulturerbe_mcp",
+      "env": {}
+    }
+  },
+
+  "claude_desktop_linux_macos": {
+    "kulturerbe-mcp-server": {
+      "command": "python3",
+      "args": ["/path/to/kulturerbe_mcp/server.py"],
+      "cwd": "/path/to/kulturerbe_mcp",
+      "env": {}
+    }
+  },
+
+  "usage_instructions": {
+    "claude_desktop_windows_wsl": "Use this configuration in Claude Desktop when running from Windows but server is in WSL",
+    "claude_code_wsl": "Use this configuration in Claude Code when running directly in WSL/Linux environment",
+    "claude_desktop_windows_native": "Use this configuration when server files are copied to native Windows",
+    "claude_desktop_linux_macos": "Use this configuration for native Linux or macOS installations",
+    "note": "Copy the relevant section (without the wrapper key) to your claude_desktop_config.json or Claude Code MCP settings"
   }
 }

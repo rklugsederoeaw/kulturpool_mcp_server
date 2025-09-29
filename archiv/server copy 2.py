@@ -3,17 +3,13 @@
 Kulturerbe MCP Server - Traditional MCP Implementation
 Austrian Cultural Heritage Search via Kulturpool API
 
-6-Tool Progressive Disclosure Architecture:
+3-Tool Architecture with Progressive Disclosure Pattern:
 1. kulturpool_explore - Facet exploration (< 2KB response)
 2. kulturpool_search_filtered - Filtered search (max 20 results)
-3. kulturpool_get_details - Related object discovery (max 3 IDs)
-4. kulturpool_get_institutions - Institution directory with locations
-5. kulturpool_get_institution_details - Detailed institution metadata
-6. kulturpool_get_assets - Optimized image assets with transformations
+3. kulturpool_get_details - Object details (max 3 objects)
 """
 
 import json
-import logging
 import time
 import asyncio
 from collections import defaultdict, deque
@@ -28,14 +24,6 @@ from mcp.types import Tool, TextContent
 from pydantic import BaseModel, Field, field_validator, ValidationError
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-# Configure logging
-logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
 
 # Create MCP server
 server = Server("kulturerbe-mcp-server")
@@ -74,24 +62,6 @@ class SecurityValidator:
             raise ValueError("Input too long (max 500 characters)")
         
         return value.strip()
-    
-    @staticmethod
-    def sanitize_query(value: str) -> str:
-        """Sanitize query string - preserve search features like quotes and &"""
-        if not isinstance(value, str):
-            raise ValueError("Input must be string")
-        
-        # Check for dangerous patterns (but keep quotes and &)
-        value_lower = value.lower()
-        for pattern in SecurityValidator.DANGEROUS_PATTERNS:
-            if pattern in value_lower:
-                raise ValueError(f"Security violation: dangerous pattern detected")
-        
-        # Length limits
-        if len(value) > 500:
-            raise ValueError("Input too long (max 500 characters)")
-        
-        return value.strip()  # Only trim whitespace, no character removal
 
 class RateLimiter:
     """Rate limiting: 100 requests per hour - simplified single-client version"""
@@ -334,7 +304,7 @@ class KulturpoolExploreParams(BaseModel):
     @field_validator('query')
     @classmethod  
     def validate_query(cls, v):
-        return SecurityValidator.sanitize_query(v)
+        return SecurityValidator.sanitize_input(v)
 
 class KulturpoolSearchParams(BaseModel):
     """Parameters for kulturpool_search_filtered tool"""
@@ -345,13 +315,13 @@ class KulturpoolSearchParams(BaseModel):
     date_to: Optional[int] = Field(None)
     limit: int = Field(default=15, ge=1, le=20)
     sort_by: Optional[str] = Field(None)
-    # Creator filter
+    # NEW: Creator filter for Phase 1
     creators: Optional[List[str]] = Field(None, max_length=5)
-    # Subject filter
+    # NEW: Subject filter for Phase 2
     subjects: Optional[List[str]] = Field(None, max_length=10)
-    # Media filter
+    # NEW: Media filter for Phase 3
     media: Optional[List[str]] = Field(None, max_length=5)
-    # Dublin Core Type filter - LIMITED due to performance
+    # NEW: Dublin Core Type filter for Phase 4 - LIMITED due to performance
     dc_types: Optional[List[str]] = Field(None, max_length=3)
     
     # Known institutions whitelist
@@ -381,7 +351,7 @@ class KulturpoolSearchParams(BaseModel):
     @field_validator('query')
     @classmethod  
     def validate_query(cls, v):
-        return SecurityValidator.sanitize_query(v)
+        return SecurityValidator.sanitize_input(v)
     
     @field_validator('institutions')
     @classmethod
@@ -631,10 +601,8 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[TextCon
         elif name == "kulturpool_get_assets":
             return await kulturpool_get_assets_handler(arguments)
         else:
-            logger.warning(f"Unknown tool requested: {name}")
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
-        logger.error(f"Tool execution failed: {name} - {str(e)}", exc_info=True)
         error_response = {
             "error": f"Tool execution failed: {name}",
             "message": str(e)
@@ -645,7 +613,6 @@ async def kulturpool_explore_handler(arguments: Dict[str, Any]) -> List[TextCont
     """Handle kulturpool_explore tool calls"""
     # Rate limiting check
     if not rate_limiter.is_allowed():
-        logger.warning(f"Rate limit exceeded for kulturpool_explore")
         raise ValueError("Rate limit exceeded. Please try again later.")
     
     # Parameter validation
@@ -685,7 +652,6 @@ async def kulturpool_search_filtered_handler(arguments: Dict[str, Any]) -> List[
     """Handle kulturpool_search_filtered tool calls"""
     # Rate limiting check
     if not rate_limiter.is_allowed():
-        logger.warning(f"Rate limit exceeded for kulturpool_search_filtered")
         raise ValueError("Rate limit exceeded. Please try again later.")
     
     # Parameter validation
@@ -835,7 +801,6 @@ async def kulturpool_get_details_handler(arguments: Dict[str, Any]) -> List[Text
     """Handle kulturpool_get_details tool calls - find related objects using IDs as search terms"""
     # Rate limiting check
     if not rate_limiter.is_allowed():
-        logger.warning(f"Rate limit exceeded for kulturpool_get_details")
         raise ValueError("Rate limit exceeded. Please try again later.")
     
     # Parameter validation
@@ -914,7 +879,6 @@ async def kulturpool_get_details_handler(arguments: Dict[str, Any]) -> List[Text
 async def kulturpool_get_institutions_handler(arguments: Dict[str, Any]) -> List[TextContent]:
     """Handle kulturpool_get_institutions tool calls"""
     if not rate_limiter.is_allowed():
-        logger.warning(f"Rate limit exceeded for kulturpool_get_institutions")
         raise ValueError("Rate limit exceeded. Please try again later.")
     
     include_locations = arguments.get('include_locations', True)
@@ -948,7 +912,6 @@ async def kulturpool_get_institutions_handler(arguments: Dict[str, Any]) -> List
 async def kulturpool_get_institution_details_handler(arguments: Dict[str, Any]) -> List[TextContent]:
     """Handle kulturpool_get_institution_details tool calls"""
     if not rate_limiter.is_allowed():
-        logger.warning(f"Rate limit exceeded for kulturpool_get_institution_details")
         raise ValueError("Rate limit exceeded. Please try again later.")
     
     institution_id = arguments.get('institution_id')
@@ -1008,7 +971,6 @@ async def kulturpool_get_institution_details_handler(arguments: Dict[str, Any]) 
 async def kulturpool_get_assets_handler(arguments: Dict[str, Any]) -> List[TextContent]:
     """Handle kulturpool_get_assets tool calls"""
     if not rate_limiter.is_allowed():
-        logger.warning(f"Rate limit exceeded for kulturpool_get_assets")
         raise ValueError("Rate limit exceeded. Please try again later.")
     
     asset_id = arguments.get('asset_id')
@@ -1273,15 +1235,15 @@ async def main():
     from mcp.server.lowlevel.server import NotificationOptions
     from mcp.types import ServerCapabilities
     
-    logger.info("Starting Kulturerbe MCP Server v2.2...")
-    logger.info("6-Tool Progressive Disclosure Architecture:")
-    logger.info("1. kulturpool_explore - Facet overview (< 2KB)")
-    logger.info("2. kulturpool_search_filtered - Filtered results (≤ 20)")
-    logger.info("3. kulturpool_get_details - Related objects (≤ 3 IDs)")
-    logger.info("4. kulturpool_get_institutions - Institution list")
-    logger.info("5. kulturpool_get_institution_details - Institution details")
-    logger.info("6. kulturpool_get_assets - Optimized image assets")
-    logger.info("Rate limit: 100 requests/hour per client")
+    print("Starting Kulturerbe MCP Server v2.2...", file=sys.stderr)
+    print("6-Tool Progressive Disclosure Architecture:", file=sys.stderr)
+    print("1. kulturpool_explore - Facet overview (< 2KB)", file=sys.stderr)
+    print("2. kulturpool_search_filtered - Filtered results (≤ 20)", file=sys.stderr)
+    print("3. kulturpool_get_details - Complete metadata (≤ 3 objects)", file=sys.stderr)
+    print("4. kulturpool_get_institutions - Institution list", file=sys.stderr)
+    print("5. kulturpool_get_institution_details - Institution details", file=sys.stderr)
+    print("6. kulturpool_get_assets - Optimized image assets", file=sys.stderr)
+    print("Rate limit: 100 requests/hour per client", file=sys.stderr)
     
     async with stdio_server() as (read_stream, write_stream):
         await server.run(

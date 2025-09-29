@@ -220,8 +220,6 @@ class KulturpoolSearchParams(BaseModel):
     subjects: Optional[List[str]] = Field(None, max_length=10)
     # NEW: Media filter for Phase 3
     media: Optional[List[str]] = Field(None, max_length=5)
-    # NEW: Dublin Core Type filter for Phase 4 - LIMITED due to performance
-    dc_types: Optional[List[str]] = Field(None, max_length=3)
     
     # Known institutions whitelist
     KNOWN_INSTITUTIONS: ClassVar[List[str]] = [
@@ -232,12 +230,6 @@ class KulturpoolSearchParams(BaseModel):
     
     # Known object types
     KNOWN_TYPES: ClassVar[List[str]] = ["IMAGE", "TEXT", "SOUND", "VIDEO", "3D"]
-    
-    # Known Dublin Core types (performance-limited list)
-    KNOWN_DC_TYPES: ClassVar[List[str]] = [
-        "Fotografie", "Gemälde", "Zeichnung", "Grafik", 
-        "Druckwerk", "Karte", "Münze", "Medaille"
-    ]
     
     # Known sort fields
     KNOWN_SORT_FIELDS: ClassVar[List[str]] = [
@@ -309,19 +301,6 @@ class KulturpoolSearchParams(BaseModel):
                 sanitized_medium = SecurityValidator.sanitize_input(medium)
                 if sanitized_medium:  # Only add non-empty media
                     sanitized.append(sanitized_medium)
-            return sanitized
-        return v
-    
-    @field_validator('dc_types')
-    @classmethod
-    def validate_dc_types(cls, v):
-        if v:
-            # Performance-aware validation - limit to known types
-            sanitized = []
-            for dc_type in v:
-                sanitized_type = SecurityValidator.sanitize_input(dc_type)
-                if sanitized_type and sanitized_type in cls.KNOWN_DC_TYPES:
-                    sanitized.append(sanitized_type)
             return sanitized
         return v
 
@@ -522,11 +501,6 @@ async def kulturpool_search_filtered_handler(arguments: Dict[str, Any]) -> List[
         for medium in params.media:
             filters.append(f"medium:={medium}")
     
-    # NEW: Dublin Core Type filters - PERFORMANCE WARNING: can generate large result sets
-    if params.dc_types:
-        for dc_type in params.dc_types:
-            filters.append(f"dcType:={dc_type}")
-    
     # Build API parameters
     api_params = {
         'q': params.query,
@@ -586,8 +560,7 @@ async def kulturpool_search_filtered_handler(arguments: Dict[str, Any]) -> List[
             "date_to": params.date_to,
             "creators": params.creators,
             "subjects": params.subjects,
-            "media": params.media,
-            "dc_types": params.dc_types
+            "media": params.media
         },
         "results": results,
         "message": f"Results contain detailed metadata. Note: kulturpool_get_details has API limitations - use these search results directly." if results else "No results found. Try different filters."
@@ -827,7 +800,7 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="kulturpool_search_filtered",
-            description="Filtered search with specific facets. Returns max 20 results with complete metadata. Supports creators, subjects, media, and Dublin Core type filters.",
+            description="Filtered search with specific facets. Returns max 20 results with detailed metadata.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -840,7 +813,7 @@ async def list_tools() -> List[Tool]:
                     "institutions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by institutions (e.g., 'Albertina', 'Belvedere', 'Österreichische Nationalbibliothek')",
+                        "description": "Filter by institutions",
                         "maxItems": 10
                     },
                     "object_types": {
@@ -872,26 +845,20 @@ async def list_tools() -> List[Tool]:
                     "creators": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by creators/artists (supports partial matching, e.g., 'Mozart', 'Dürer')",
+                        "description": "Filter by creators/artists (supports partial matching)",
                         "maxItems": 5
                     },
                     "subjects": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by subjects/topics (exact matching, e.g., 'Portrait', 'Historische Person')",
+                        "description": "Filter by subjects/topics (exact matching)",
                         "maxItems": 10
                     },
                     "media": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by medium/material (exact matching, e.g., 'Handschrift', 'Glasdia', 'Fotografie')",
+                        "description": "Filter by medium/material (e.g., 'Handschrift', 'Glasdia', 'Fotografie')",
                         "maxItems": 5
-                    },
-                    "dc_types": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Filter by Dublin Core types (e.g., 'Fotografie', 'Gemälde'). WARNING: Can generate large result sets. Use with other filters.",
-                        "maxItems": 3
                     }
                 },
                 "required": ["query"]
