@@ -781,7 +781,7 @@ async def kulturpool_explore_handler(arguments: Dict[str, Any]) -> List[TextCont
     # Build API request parameters
     api_params = {
         'q': params.query,
-        'per_page': 50,  # Get enough for good facet analysis
+        'per_page': 10,  # Sufficient for facet analysis, focus on performance
         'facet_by': 'dataProvider,edmType,dateMin,dateMax',
         'include_fields': 'id,title,creator,dataProvider,edmType,previewImage,isShownAt,isShownBy,object,iiifManifest,dateMin,dateMax,subject,description'
     }
