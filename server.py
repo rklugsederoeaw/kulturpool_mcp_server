@@ -413,19 +413,10 @@ class KulturpoolClient:
             return cached_response
 
         try:
-            # Try HEAD request first for metadata-only retrieval
-            try:
-                response = self.session.head(url, params=params, timeout=30)
-                response.raise_for_status()
-                logger.debug("Asset metadata retrieved via HEAD request")
-            except (requests.RequestException, requests.HTTPError):
-                # Fallback to streaming GET with immediate close
-                logger.debug("HEAD request failed, falling back to streaming GET")
-                response = self.session.get(url, params=params, timeout=30, stream=True)
-                response.raise_for_status()
-                # Close the response immediately to avoid downloading body
-                response.close()
-                logger.debug("Asset metadata retrieved via streaming GET (closed immediately)")
+            # Direct GET request (simplified approach based on audit findings)
+            response = self.session.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            logger.debug("Asset metadata retrieved via GET request")
 
             asset_data = {
                 "asset_id": asset_id,
@@ -435,9 +426,9 @@ class KulturpoolClient:
                 "transformations": params
             }
 
-            # Cache successful response (30 minutes for assets)
-            response_cache.set(url, params, asset_data, 1800.0)  # 30 minutes
-            logger.debug("Response cached for asset request")
+            # Cache successful response (24 hours - assets rarely change)
+            response_cache.set(url, params, asset_data, 86400.0)  # 24 hours
+            logger.debug("Response cached for asset request (24h TTL)")
 
             return asset_data
         except requests.Timeout:
@@ -456,7 +447,7 @@ api_client = KulturpoolClient()
 class KulturpoolExploreParams(BaseModel):
     """Parameters for kulturpool_explore tool"""
     query: str = Field(..., min_length=1, max_length=500)
-    max_examples: int = Field(default=5, ge=1, le=10)
+    max_examples: int = Field(default=10, ge=1, le=10)
     
     @field_validator('query')
     @classmethod  
