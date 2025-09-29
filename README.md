@@ -240,7 +240,7 @@ kulturpool_get_assets(
 )
 ```
 
-## Supported Institutions
+## Selection of supported institutions
 
 Major Austrian cultural institutions participate in the Kulturpool network:
 
@@ -273,16 +273,6 @@ The server is built as a single-file implementation (`server.py`, ~1300 lines) w
 ├── KulturpoolClient     # HTTP client with retry logic
 ├── ResponseProcessor    # Data processing and facet analysis
 └── Tool Handlers        # Six specialized tool implementations
-```
-
-### Testing
-
-Test files are available in the `archiv/` directory:
-
-```bash
-python archiv/test_server.py          # Main functionality tests
-python archiv/test_server_simple.py   # Basic API tests
-python archiv/test_fastmcp.py         # Performance tests
 ```
 
 ## Configuration
