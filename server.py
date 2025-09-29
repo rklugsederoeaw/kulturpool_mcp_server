@@ -17,11 +17,12 @@ import logging
 import time
 import asyncio
 import hashlib
-from collections import defaultdict, deque
+import copy
+from collections import defaultdict, deque, OrderedDict
 from datetime import datetime
 from urllib.parse import quote, urlencode
-from typing import Any, Dict, List, Optional, ClassVar
-from threading import Lock
+from typing import Any, Dict, List, Optional, ClassVar, Tuple
+from threading import Lock, Thread
 
 import requests
 from mcp.server import Server
@@ -47,20 +48,59 @@ server = Server("kulturerbe-mcp-server")
 # ==============================================================================
 
 class ResponseCache:
-    """Thread-safe TTL cache for API responses"""
+    """Thread-safe bounded TTL cache for API responses"""
 
-    def __init__(self):
-        self._cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
+    def __init__(self, max_size: int = 1000, cleanup_interval: float = 300.0):
+        self._cache: OrderedDict[str, Tuple[float, Any]] = OrderedDict()
         self._lock = Lock()
+        self._max_size = max_size
+        self._cleanup_interval = cleanup_interval
+        self._stats: Dict[str, int] = {
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+        }
+        self._cleanup_thread: Optional[Thread] = None
+        if cleanup_interval > 0:
+            self._start_cleanup_thread()
+
+    def _start_cleanup_thread(self) -> None:
+        def _periodic_cleanup() -> None:
+            while True:
+                time.sleep(self._cleanup_interval)
+                try:
+                    self.clear_expired()
+                except Exception:
+                    logger.exception("ResponseCache cleanup failed")
+
+        self._cleanup_thread = Thread(
+            target=_periodic_cleanup,
+            name="response-cache-cleanup",
+            daemon=True,
+        )
+        self._cleanup_thread.start()
 
     def _generate_cache_key(self, url: str, params: Dict[str, Any]) -> str:
         """Generate consistent cache key from URL and parameters"""
-        # Sort parameters for consistent key generation
         sorted_params = sorted(params.items()) if params else []
         cache_string = f"{url}|{sorted_params}"
         return hashlib.md5(cache_string.encode()).hexdigest()
 
-    def get(self, url: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _evict_expired_locked(self, now: Optional[float] = None) -> None:
+        current_time = now or time.time()
+        expired_keys = [
+            key for key, (expiry_time, _) in self._cache.items()
+            if current_time > expiry_time
+        ]
+        for key in expired_keys:
+            self._cache.pop(key, None)
+
+    def _enforce_size_locked(self) -> None:
+        while len(self._cache) > self._max_size:
+            self._cache.popitem(last=False)
+            self._stats["evictions"] += 1
+
+    def get(self, url: str, params: Dict[str, Any]) -> Optional[Any]:
         """Get cached response if not expired"""
         cache_key = self._generate_cache_key(url, params)
         now = time.time()
@@ -68,41 +108,48 @@ class ResponseCache:
         with self._lock:
             entry = self._cache.get(cache_key)
             if not entry:
+                self._stats["misses"] += 1
                 return None
 
             expiry_time, data = entry
             if now > expiry_time:
-                # Remove expired entry
                 self._cache.pop(cache_key, None)
+                self._stats["misses"] += 1
                 return None
 
-            return data
+            self._cache.move_to_end(cache_key)
+            self._stats["hits"] += 1
+            return copy.deepcopy(data)
 
-    def set(self, url: str, params: Dict[str, Any], data: Dict[str, Any], ttl_seconds: float):
+    def set(self, url: str, params: Dict[str, Any], data: Any, ttl_seconds: float) -> None:
         """Cache response data with TTL"""
         cache_key = self._generate_cache_key(url, params)
         expiry_time = time.time() + ttl_seconds
+        entry: Tuple[float, Any] = (expiry_time, copy.deepcopy(data))
 
         with self._lock:
-            self._cache[cache_key] = (expiry_time, data)
+            self._evict_expired_locked(now=time.time())
+            self._cache[cache_key] = entry
+            self._cache.move_to_end(cache_key)
+            self._enforce_size_locked()
 
-    def clear_expired(self):
+    def clear_expired(self) -> None:
         """Remove all expired entries (for maintenance)"""
-        now = time.time()
         with self._lock:
-            expired_keys = [
-                key for key, (expiry_time, _) in self._cache.items()
-                if now > expiry_time
-            ]
-            for key in expired_keys:
-                self._cache.pop(key, None)
+            self._evict_expired_locked()
 
     def get_stats(self) -> Dict[str, int]:
         """Get cache statistics"""
         with self._lock:
+            total_entries = len(self._cache)
+            memory_estimate = sum(len(str(data)) for _, data in self._cache.values())
             return {
-                "total_entries": len(self._cache),
-                "memory_usage_estimate": sum(len(str(data)) for _, data in self._cache.values())
+                "total_entries": total_entries,
+                "memory_usage_estimate": memory_estimate,
+                "hits": self._stats["hits"],
+                "misses": self._stats["misses"],
+                "evictions": self._stats["evictions"],
+                "max_size": self._max_size,
             }
 
 # Global cache instance
@@ -256,23 +303,25 @@ class KulturpoolClient:
             if not self.BASE_URL.startswith("https://api.kulturpool.at"):
                 raise ValueError("Only Kulturpool API allowed")
 
+            original_params = copy.deepcopy(params)
+
             # Check cache first (60 second TTL for search endpoints)
-            cache_params = params.copy()
-            cached_response = response_cache.get(self.BASE_URL, cache_params)
+            cached_response = response_cache.get(self.BASE_URL, original_params)
             if cached_response:
                 logger.debug("Cache hit for search request")
                 return cached_response
 
             # Special handling for filter_by and sort_by parameters that need unencoded characters
             special_params = {}
-            if 'filter_by' in params:
-                special_params['filter_by'] = params.pop('filter_by')
-            if 'sort_by' in params:
-                special_params['sort_by'] = params.pop('sort_by')
+            params_for_request = copy.deepcopy(original_params)
+            if 'filter_by' in params_for_request:
+                special_params['filter_by'] = params_for_request.pop('filter_by')
+            if 'sort_by' in params_for_request:
+                special_params['sort_by'] = params_for_request.pop('sort_by')
 
             if special_params:
                 # Build URL manually with proper encoding for special parameters
-                base_url = f"{self.BASE_URL}?{urlencode(params)}" if params else self.BASE_URL
+                base_url = f"{self.BASE_URL}?{urlencode(params_for_request)}" if params_for_request else self.BASE_URL
                 separator = "&" if "?" in base_url else "?"
 
                 # Add special parameters while preserving :, =, & characters
@@ -288,14 +337,14 @@ class KulturpoolClient:
             else:
                 response = self.session.get(
                     self.BASE_URL,
-                    params=params,
+                    params=params_for_request,
                     timeout=self.TIMEOUT
                 )
             response.raise_for_status()
 
             # Cache successful responses (60 seconds for search endpoints)
             response_data = response.json()
-            response_cache.set(self.BASE_URL, cache_params, response_data, 60.0)
+            response_cache.set(self.BASE_URL, original_params, response_data, 60.0)
             logger.debug("Response cached for search request")
 
             return response_data
@@ -313,7 +362,9 @@ class KulturpoolClient:
             params["language"] = language
 
         # Check cache first (6 hour TTL for institutions - they change rarely)
-        cached_response = response_cache.get(url, params)
+        cache_params = params.copy()
+        cache_params["include_locations"] = include_locations
+        cached_response = response_cache.get(url, cache_params)
         if cached_response:
             logger.debug("Cache hit for institutions request")
             return cached_response
@@ -322,10 +373,6 @@ class KulturpoolClient:
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
-
-            # Cache successful response (6 hours for institutions)
-            response_cache.set(url, params, data, 21600.0)  # 6 hours
-            logger.debug("Response cached for institutions request")
             
             institutions = data.get('data', [])
             processed_institutions = []
@@ -349,11 +396,17 @@ class KulturpoolClient:
                             }
                 
                 processed_institutions.append(processed_inst)
-            
-            return {
+
+            processed_result = {
                 "institutions": processed_institutions,
                 "total_count": len(processed_institutions)
             }
+
+            # Cache successful response (6 hours for institutions)
+            response_cache.set(url, cache_params, processed_result, 21600.0)  # 6 hours
+            logger.debug("Response cached for institutions request")
+
+            return processed_result
             
         except requests.Timeout:
             raise ValueError("API request timed out")
@@ -368,8 +421,10 @@ class KulturpoolClient:
         if language in ["de", "en"]:
             params["language"] = language
 
+        cache_params = params.copy()
+
         # Check cache first (12 hour TTL for institution details - they change rarely)
-        cached_response = response_cache.get(url, params)
+        cached_response = response_cache.get(url, cache_params)
         if cached_response:
             logger.debug("Cache hit for institution details request")
             return cached_response
@@ -381,7 +436,7 @@ class KulturpoolClient:
             institution_data = data.get('data', {})
 
             # Cache successful response (12 hours for institution details)
-            response_cache.set(url, params, institution_data, 43200.0)  # 12 hours
+            response_cache.set(url, cache_params, institution_data, 43200.0)  # 12 hours
             logger.debug("Response cached for institution details request")
 
             return institution_data
@@ -772,7 +827,7 @@ async def kulturpool_explore_handler(arguments: Dict[str, Any]) -> List[TextCont
     # Build API request parameters
     api_params = {
         'q': params.query,
-        'per_page': 10,  # Sufficient for facet analysis, focus on performance
+        'per_page': 30,  # QA-compromise: maintains facet fidelity without prior 50-item overhead
         'facet_by': 'dataProvider,edmType,dateMin,dateMax',
         'include_fields': 'id,title,creator,dataProvider,edmType,previewImage,isShownAt,isShownBy,object,iiifManifest,dateMin,dateMax,subject,description'
     }

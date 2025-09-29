@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude_memory__qdrant-find",
+      "mcp__claude_memory__qdrant-find-with-date",
+      "mcp__kulturerbe-mcp-server__kulturpool_explore",
+      "mcp__kulturerbe-mcp-server__kulturpool_search_filtered",
+      "Bash(kill:*)",
+      "Bash(source:*)",
+      "Bash(python3:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "mcp__claude_memory__qdrant-store",
+      "WebFetch(domain:wissen.kulturpool.at)",
+      "mcp__zen__debug",
+      "mcp__zen__chat",
+      "Bash(gemini:*)",
+      "mcp__zen__challenge",
+      "Bash(git pull:*)",
+      "Bash(git fetch:*)",
+      "Bash(git push:*)",
+      "Bash(git config:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh auth:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(GIT_TERMINAL_PROMPT=0 git push -u origin main)",
+      "Bash(git merge:*)",
+      "Bash(git rm:*)",
+      "Bash(gh issue create --title \"Performance: Implement Response Microcaching (High Impact)\" --body \"$(cat <<''EOF''\n## Summary\n\nImplement in-memory TTL caching for API responses to reduce latency and API load for repeated identical requests.\n\n## Problem\n\nCurrently, every request goes directly to the Kulturpool API without any caching mechanism:\n- Lines 212-217, 235-237, 281-283, 307-308 in `server.py`\n- Rate limiter exists (100 req/h) but no response cache\n- Repeated identical queries cause unnecessary API calls and latency\n\n## Proposed Solution\n\n**In-memory TTL cache** with the following specifications:\n- **Cache Key**: Complete request signature (URL + all query parameters)\n- **TTL Settings**:\n  - `/search/` endpoints: 30-120 seconds (suggested: 60s)\n  - `/institutions` and `/institutions/{id}`: 6-24 hours\n- **Cache Policy**: Only successful 200 JSON responses (no errors/timeouts)\n- **Thread Safety**: Implement locking since HTTP calls run via `asyncio.to_thread`\n\n## Technical Details\n\nSee [performance_improvements.md](./performance_improvements.md) for complete implementation sketch.\n\n**Expected Benefits:**\n- 30-80% latency reduction for cached requests\n- Significant decrease in redundant API calls\n- Better user experience for repeated queries\n\n## Implementation Priority\n\n**High Impact** - Should be implemented first alongside Asset HEAD/stream optimization.\n\n## Labels\n\n- `enhancement`\n- `performance` \n- `high-priority`\nEOF\n)\" --label \"enhancement,performance,high-priority\")",
+      "Bash(gh issue create --title \"Performance: Implement Response Microcaching (High Impact)\" --body \"$(cat <<''EOF''\n## Summary\n\nImplement in-memory TTL caching for API responses to reduce latency and API load for repeated identical requests.\n\n## Problem\n\nCurrently, every request goes directly to the Kulturpool API without any caching mechanism:\n- Lines 212-217, 235-237, 281-283, 307-308 in `server.py`\n- Rate limiter exists (100 req/h) but no response cache\n- Repeated identical queries cause unnecessary API calls and latency\n\n## Proposed Solution\n\n**In-memory TTL cache** with the following specifications:\n- **Cache Key**: Complete request signature (URL + all query parameters)\n- **TTL Settings**:\n  - `/search/` endpoints: 30-120 seconds (suggested: 60s)\n  - `/institutions` and `/institutions/{id}`: 6-24 hours\n- **Cache Policy**: Only successful 200 JSON responses (no errors/timeouts)\n- **Thread Safety**: Implement locking since HTTP calls run via `asyncio.to_thread`\n\n## Technical Details\n\nSee [performance_improvements.md](./performance_improvements.md) for complete implementation sketch.\n\n**Expected Benefits:**\n- 30-80% latency reduction for cached requests\n- Significant decrease in redundant API calls\n- Better user experience for repeated queries\n\n## Implementation Priority\n\n**High Impact** - Should be implemented first alongside Asset HEAD/stream optimization.\n\n## Labels\n\n- `enhancement`\n- `performance` \n- `high-priority`\nEOF\n)\" --label \"enhancement\")",
+      "Bash(gh issue create --title \"Performance: Implement Response Microcaching (High Impact)\" --body \"$(cat <<''EOF''\n## Summary\n\nImplement in-memory TTL caching for API responses to reduce latency and API load for repeated identical requests.\n\n## Problem\n\nCurrently, every request goes directly to the Kulturpool API without any caching mechanism:\n- Lines 212-217, 235-237, 281-283, 307-308 in `server.py`\n- Rate limiter exists (100 req/h) but no response cache\n- Repeated identical queries cause unnecessary API calls and latency\n\n## Proposed Solution\n\n**In-memory TTL cache** with the following specifications:\n- **Cache Key**: Complete request signature (URL + all query parameters)\n- **TTL Settings**:\n  - `/search/` endpoints: 30-120 seconds (suggested: 60s)\n  - `/institutions` and `/institutions/{id}`: 6-24 hours\n- **Cache Policy**: Only successful 200 JSON responses (no errors/timeouts)\n- **Thread Safety**: Implement locking since HTTP calls run via `asyncio.to_thread`\n\n## Technical Details\n\nSee [performance_improvements.md](./performance_improvements.md) for complete implementation sketch.\n\n**Expected Benefits:**\n- 30-80% latency reduction for cached requests\n- Significant decrease in redundant API calls\n- Better user experience for repeated queries\n\n## Implementation Priority\n\n**High Impact** - Should be implemented first alongside Asset HEAD/stream optimization.\nEOF\n)\" --label \"enhancement\")",
+      "Bash(git checkout:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
