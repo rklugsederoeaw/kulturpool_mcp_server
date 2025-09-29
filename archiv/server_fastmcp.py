@@ -464,15 +464,35 @@ def kulturpool_get_details(object_ids: List[str]) -> str:
         # Fetch details for each object ID
         for obj_id in params.object_ids:
             try:
-                # Search for specific object by ID
+                # Search for specific object by ID using multiple strategies
+                # Strategy 1: Search in identifier and related fields
                 api_params = {
                     'q': obj_id,
-                    'filter_by': f'id:={obj_id}',
+                    'query_by': 'identifier,title,alternative',
                     'per_page': 1
                 }
                 
                 response_data = api_client.search(api_params)
                 hits = response_data.get('hits', [])
+                
+                # Strategy 2: If no results, try broader search across all fields
+                if not hits:
+                    api_params = {
+                        'q': obj_id,
+                        'per_page': 1
+                    }
+                    response_data = api_client.search(api_params)
+                    hits = response_data.get('hits', [])
+                
+                # Strategy 3: If still no results, try exact ID match in title field
+                if not hits:
+                    api_params = {
+                        'q': f'"{obj_id}"',  # Exact match with quotes
+                        'query_by': 'identifier,title,alternative',
+                        'per_page': 1
+                    }
+                    response_data = api_client.search(api_params)
+                    hits = response_data.get('hits', [])
                 
                 if not hits:
                     detailed_objects.append({
