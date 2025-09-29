@@ -16,10 +16,12 @@ import json
 import logging
 import time
 import asyncio
+import hashlib
 from collections import defaultdict, deque
 from datetime import datetime
 from urllib.parse import quote, urlencode
 from typing import Any, Dict, List, Optional, ClassVar
+from threading import Lock
 
 import requests
 from mcp.server import Server
@@ -39,6 +41,72 @@ logging.basicConfig(
 
 # Create MCP server
 server = Server("kulturerbe-mcp-server")
+
+# ==============================================================================
+# RESPONSE MICROCACHING
+# ==============================================================================
+
+class ResponseCache:
+    """Thread-safe TTL cache for API responses"""
+
+    def __init__(self):
+        self._cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
+        self._lock = Lock()
+
+    def _generate_cache_key(self, url: str, params: Dict[str, Any]) -> str:
+        """Generate consistent cache key from URL and parameters"""
+        # Sort parameters for consistent key generation
+        sorted_params = sorted(params.items()) if params else []
+        cache_string = f"{url}|{sorted_params}"
+        return hashlib.md5(cache_string.encode()).hexdigest()
+
+    def get(self, url: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Get cached response if not expired"""
+        cache_key = self._generate_cache_key(url, params)
+        now = time.time()
+
+        with self._lock:
+            entry = self._cache.get(cache_key)
+            if not entry:
+                return None
+
+            expiry_time, data = entry
+            if now > expiry_time:
+                # Remove expired entry
+                self._cache.pop(cache_key, None)
+                return None
+
+            return data
+
+    def set(self, url: str, params: Dict[str, Any], data: Dict[str, Any], ttl_seconds: float):
+        """Cache response data with TTL"""
+        cache_key = self._generate_cache_key(url, params)
+        expiry_time = time.time() + ttl_seconds
+
+        with self._lock:
+            self._cache[cache_key] = (expiry_time, data)
+
+    def clear_expired(self):
+        """Remove all expired entries (for maintenance)"""
+        now = time.time()
+        with self._lock:
+            expired_keys = [
+                key for key, (expiry_time, _) in self._cache.items()
+                if now > expiry_time
+            ]
+            for key in expired_keys:
+                self._cache.pop(key, None)
+
+    def get_stats(self) -> Dict[str, int]:
+        """Get cache statistics"""
+        with self._lock:
+            return {
+                "total_entries": len(self._cache),
+                "memory_usage_estimate": sum(len(str(data)) for _, data in self._cache.values())
+            }
+
+# Global cache instance
+response_cache = ResponseCache()
 
 # ==============================================================================
 # SECURITY & RATE LIMITING CLASSES
@@ -182,24 +250,31 @@ class KulturpoolClient:
         })
     
     def search(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute search with security validation"""
+        """Execute search with security validation and caching"""
         try:
             # Validate URL
             if not self.BASE_URL.startswith("https://api.kulturpool.at"):
                 raise ValueError("Only Kulturpool API allowed")
-            
+
+            # Check cache first (60 second TTL for search endpoints)
+            cache_params = params.copy()
+            cached_response = response_cache.get(self.BASE_URL, cache_params)
+            if cached_response:
+                logger.debug("Cache hit for search request")
+                return cached_response
+
             # Special handling for filter_by and sort_by parameters that need unencoded characters
             special_params = {}
             if 'filter_by' in params:
                 special_params['filter_by'] = params.pop('filter_by')
             if 'sort_by' in params:
                 special_params['sort_by'] = params.pop('sort_by')
-                
+
             if special_params:
                 # Build URL manually with proper encoding for special parameters
                 base_url = f"{self.BASE_URL}?{urlencode(params)}" if params else self.BASE_URL
                 separator = "&" if "?" in base_url else "?"
-                
+
                 # Add special parameters while preserving :, =, & characters
                 special_parts = []
                 for key, value in special_params.items():
@@ -207,7 +282,7 @@ class KulturpoolClient:
                     # Encode parentheses and pipes to avoid proxy parsing issues
                     encoded_value = quote(value, safe='=:&')
                     special_parts.append(f"{key}={encoded_value}")
-                
+
                 full_url = f"{base_url}{separator}{'&'.join(special_parts)}"
                 response = self.session.get(full_url, timeout=self.TIMEOUT)
             else:
@@ -217,24 +292,40 @@ class KulturpoolClient:
                     timeout=self.TIMEOUT
                 )
             response.raise_for_status()
-            return response.json()
+
+            # Cache successful responses (60 seconds for search endpoints)
+            response_data = response.json()
+            response_cache.set(self.BASE_URL, cache_params, response_data, 60.0)
+            logger.debug("Response cached for search request")
+
+            return response_data
             
         except requests.RequestException as e:
             raise ConnectionError(f"Kulturpool API request failed: {str(e)}")
 
 
     def get_institutions(self, include_locations: bool = True, language: str = "de") -> Dict[str, Any]:
-        """Get list of all institutions"""
+        """Get list of all institutions with caching"""
         url = f"{self.base_url}/institutions/"
         params = {}
-        
+
         if language in ["de", "en"]:
             params["language"] = language
-        
+
+        # Check cache first (6 hour TTL for institutions - they change rarely)
+        cached_response = response_cache.get(url, params)
+        if cached_response:
+            logger.debug("Cache hit for institutions request")
+            return cached_response
+
         try:
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
+
+            # Cache successful response (6 hours for institutions)
+            response_cache.set(url, params, data, 21600.0)  # 6 hours
+            logger.debug("Response cached for institutions request")
             
             institutions = data.get('data', [])
             processed_institutions = []
@@ -270,28 +361,40 @@ class KulturpoolClient:
             raise ValueError(f"API request failed: {str(e)}")
     
     def get_institution_details(self, institution_id: int, language: str = "de") -> Dict[str, Any]:
-        """Get detailed information about a specific institution"""
+        """Get detailed information about a specific institution with caching"""
         url = f"{self.base_url}/institutions/{institution_id}"
         params = {}
-        
+
         if language in ["de", "en"]:
             params["language"] = language
-        
+
+        # Check cache first (12 hour TTL for institution details - they change rarely)
+        cached_response = response_cache.get(url, params)
+        if cached_response:
+            logger.debug("Cache hit for institution details request")
+            return cached_response
+
         try:
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
-            return data.get('data', {})
+            institution_data = data.get('data', {})
+
+            # Cache successful response (12 hours for institution details)
+            response_cache.set(url, params, institution_data, 43200.0)  # 12 hours
+            logger.debug("Response cached for institution details request")
+
+            return institution_data
         except requests.Timeout:
             raise ValueError("API request timed out")
         except requests.RequestException as e:
             raise ValueError(f"API request failed: {str(e)}")
     
     def get_asset(self, asset_id: str, width: Optional[int] = None, height: Optional[int] = None, format: str = "webp", quality: int = 85, fit: str = "inside") -> Dict[str, Any]:
-        """Get optimized asset with transformations"""
+        """Get optimized asset with transformations and caching"""
         url = f"{self.base_url}/assets/{asset_id}"
         params = {}
-        
+
         if width:
             params["width"] = width
         if height:
@@ -302,17 +405,29 @@ class KulturpoolClient:
             params["quality"] = quality
         if fit in ["inside", "outside", "cover", "fill"]:
             params["fit"] = fit
-        
+
+        # Check cache first (30 minute TTL for assets - moderate caching)
+        cached_response = response_cache.get(url, params)
+        if cached_response:
+            logger.debug("Cache hit for asset request")
+            return cached_response
+
         try:
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
-            return {
+            asset_data = {
                 "asset_id": asset_id,
                 "url": response.url,
                 "content_type": response.headers.get('content-type', ''),
                 "content_length": response.headers.get('content-length', ''),
                 "transformations": params
             }
+
+            # Cache successful response (30 minutes for assets)
+            response_cache.set(url, params, asset_data, 1800.0)  # 30 minutes
+            logger.debug("Response cached for asset request")
+
+            return asset_data
         except requests.Timeout:
             raise ValueError("API request timed out")
         except requests.RequestException as e:
