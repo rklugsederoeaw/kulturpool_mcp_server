@@ -59,6 +59,9 @@ coverage.xml
 .idea/
 .vscode/
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # MyPy
 .mypy_cache/
 .dmypy.json

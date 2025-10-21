@@ -16,10 +16,13 @@ import json
 import logging
 import time
 import asyncio
-from collections import defaultdict, deque
+import hashlib
+import copy
+from collections import defaultdict, deque, OrderedDict
 from datetime import datetime
 from urllib.parse import quote, urlencode
-from typing import Any, Dict, List, Optional, ClassVar
+from typing import Any, Dict, List, Optional, ClassVar, Tuple
+from threading import Lock, Thread
 
 import requests
 from mcp.server import Server
@@ -39,6 +42,118 @@ logging.basicConfig(
 
 # Create MCP server
 server = Server("kulturerbe-mcp-server")
+
+# ==============================================================================
+# RESPONSE MICROCACHING
+# ==============================================================================
+
+class ResponseCache:
+    """Thread-safe bounded TTL cache for API responses"""
+
+    def __init__(self, max_size: int = 1000, cleanup_interval: float = 300.0):
+        self._cache: OrderedDict[str, Tuple[float, Any]] = OrderedDict()
+        self._lock = Lock()
+        self._max_size = max_size
+        self._cleanup_interval = cleanup_interval
+        self._stats: Dict[str, int] = {
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+        }
+        self._cleanup_thread: Optional[Thread] = None
+        if cleanup_interval > 0:
+            self._start_cleanup_thread()
+
+    def _start_cleanup_thread(self) -> None:
+        def _periodic_cleanup() -> None:
+            while True:
+                time.sleep(self._cleanup_interval)
+                try:
+                    self.clear_expired()
+                except Exception:
+                    logger.exception("ResponseCache cleanup failed")
+
+        self._cleanup_thread = Thread(
+            target=_periodic_cleanup,
+            name="response-cache-cleanup",
+            daemon=True,
+        )
+        self._cleanup_thread.start()
+
+    def _generate_cache_key(self, url: str, params: Dict[str, Any]) -> str:
+        """Generate consistent cache key from URL and parameters"""
+        sorted_params = sorted(params.items()) if params else []
+        cache_string = f"{url}|{sorted_params}"
+        return hashlib.md5(cache_string.encode()).hexdigest()
+
+    def _evict_expired_locked(self, now: Optional[float] = None) -> None:
+        current_time = now or time.time()
+        expired_keys = [
+            key for key, (expiry_time, _) in self._cache.items()
+            if current_time > expiry_time
+        ]
+        for key in expired_keys:
+            self._cache.pop(key, None)
+
+    def _enforce_size_locked(self) -> None:
+        while len(self._cache) > self._max_size:
+            self._cache.popitem(last=False)
+            self._stats["evictions"] += 1
+
+    def get(self, url: str, params: Dict[str, Any]) -> Optional[Any]:
+        """Get cached response if not expired"""
+        cache_key = self._generate_cache_key(url, params)
+        now = time.time()
+
+        with self._lock:
+            entry = self._cache.get(cache_key)
+            if not entry:
+                self._stats["misses"] += 1
+                return None
+
+            expiry_time, data = entry
+            if now > expiry_time:
+                self._cache.pop(cache_key, None)
+                self._stats["misses"] += 1
+                return None
+
+            self._cache.move_to_end(cache_key)
+            self._stats["hits"] += 1
+            return copy.deepcopy(data)
+
+    def set(self, url: str, params: Dict[str, Any], data: Any, ttl_seconds: float) -> None:
+        """Cache response data with TTL"""
+        cache_key = self._generate_cache_key(url, params)
+        expiry_time = time.time() + ttl_seconds
+        entry: Tuple[float, Any] = (expiry_time, copy.deepcopy(data))
+
+        with self._lock:
+            self._evict_expired_locked(now=time.time())
+            self._cache[cache_key] = entry
+            self._cache.move_to_end(cache_key)
+            self._enforce_size_locked()
+
+    def clear_expired(self) -> None:
+        """Remove all expired entries (for maintenance)"""
+        with self._lock:
+            self._evict_expired_locked()
+
+    def get_stats(self) -> Dict[str, int]:
+        """Get cache statistics"""
+        with self._lock:
+            total_entries = len(self._cache)
+            memory_estimate = sum(len(str(data)) for _, data in self._cache.values())
+            return {
+                "total_entries": total_entries,
+                "memory_usage_estimate": memory_estimate,
+                "hits": self._stats["hits"],
+                "misses": self._stats["misses"],
+                "evictions": self._stats["evictions"],
+                "max_size": self._max_size,
+            }
+
+# Global cache instance
+response_cache = ResponseCache()
 
 # ==============================================================================
 # SECURITY & RATE LIMITING CLASSES
@@ -182,24 +297,33 @@ class KulturpoolClient:
         })
     
     def search(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute search with security validation"""
+        """Execute search with security validation and caching"""
         try:
             # Validate URL
             if not self.BASE_URL.startswith("https://api.kulturpool.at"):
                 raise ValueError("Only Kulturpool API allowed")
-            
+
+            original_params = copy.deepcopy(params)
+
+            # Check cache first (60 second TTL for search endpoints)
+            cached_response = response_cache.get(self.BASE_URL, original_params)
+            if cached_response:
+                logger.debug("Cache hit for search request")
+                return cached_response
+
             # Special handling for filter_by and sort_by parameters that need unencoded characters
             special_params = {}
-            if 'filter_by' in params:
-                special_params['filter_by'] = params.pop('filter_by')
-            if 'sort_by' in params:
-                special_params['sort_by'] = params.pop('sort_by')
-                
+            params_for_request = copy.deepcopy(original_params)
+            if 'filter_by' in params_for_request:
+                special_params['filter_by'] = params_for_request.pop('filter_by')
+            if 'sort_by' in params_for_request:
+                special_params['sort_by'] = params_for_request.pop('sort_by')
+
             if special_params:
                 # Build URL manually with proper encoding for special parameters
-                base_url = f"{self.BASE_URL}?{urlencode(params)}" if params else self.BASE_URL
+                base_url = f"{self.BASE_URL}?{urlencode(params_for_request)}" if params_for_request else self.BASE_URL
                 separator = "&" if "?" in base_url else "?"
-                
+
                 # Add special parameters while preserving :, =, & characters
                 special_parts = []
                 for key, value in special_params.items():
@@ -207,30 +331,44 @@ class KulturpoolClient:
                     # Encode parentheses and pipes to avoid proxy parsing issues
                     encoded_value = quote(value, safe='=:&')
                     special_parts.append(f"{key}={encoded_value}")
-                
+
                 full_url = f"{base_url}{separator}{'&'.join(special_parts)}"
                 response = self.session.get(full_url, timeout=self.TIMEOUT)
             else:
                 response = self.session.get(
                     self.BASE_URL,
-                    params=params,
+                    params=params_for_request,
                     timeout=self.TIMEOUT
                 )
             response.raise_for_status()
-            return response.json()
+
+            # Cache successful responses (60 seconds for search endpoints)
+            response_data = response.json()
+            response_cache.set(self.BASE_URL, original_params, response_data, 60.0)
+            logger.debug("Response cached for search request")
+
+            return response_data
             
         except requests.RequestException as e:
             raise ConnectionError(f"Kulturpool API request failed: {str(e)}")
 
 
     def get_institutions(self, include_locations: bool = True, language: str = "de") -> Dict[str, Any]:
-        """Get list of all institutions"""
+        """Get list of all institutions with caching"""
         url = f"{self.base_url}/institutions/"
         params = {}
-        
+
         if language in ["de", "en"]:
             params["language"] = language
-        
+
+        # Check cache first (6 hour TTL for institutions - they change rarely)
+        cache_params = params.copy()
+        cache_params["include_locations"] = include_locations
+        cached_response = response_cache.get(url, cache_params)
+        if cached_response:
+            logger.debug("Cache hit for institutions request")
+            return cached_response
+
         try:
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
@@ -258,11 +396,17 @@ class KulturpoolClient:
                             }
                 
                 processed_institutions.append(processed_inst)
-            
-            return {
+
+            processed_result = {
                 "institutions": processed_institutions,
                 "total_count": len(processed_institutions)
             }
+
+            # Cache successful response (6 hours for institutions)
+            response_cache.set(url, cache_params, processed_result, 21600.0)  # 6 hours
+            logger.debug("Response cached for institutions request")
+
+            return processed_result
             
         except requests.Timeout:
             raise ValueError("API request timed out")
@@ -270,28 +414,42 @@ class KulturpoolClient:
             raise ValueError(f"API request failed: {str(e)}")
     
     def get_institution_details(self, institution_id: int, language: str = "de") -> Dict[str, Any]:
-        """Get detailed information about a specific institution"""
+        """Get detailed information about a specific institution with caching"""
         url = f"{self.base_url}/institutions/{institution_id}"
         params = {}
-        
+
         if language in ["de", "en"]:
             params["language"] = language
-        
+
+        cache_params = params.copy()
+
+        # Check cache first (12 hour TTL for institution details - they change rarely)
+        cached_response = response_cache.get(url, cache_params)
+        if cached_response:
+            logger.debug("Cache hit for institution details request")
+            return cached_response
+
         try:
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
-            return data.get('data', {})
+            institution_data = data.get('data', {})
+
+            # Cache successful response (12 hours for institution details)
+            response_cache.set(url, cache_params, institution_data, 43200.0)  # 12 hours
+            logger.debug("Response cached for institution details request")
+
+            return institution_data
         except requests.Timeout:
             raise ValueError("API request timed out")
         except requests.RequestException as e:
             raise ValueError(f"API request failed: {str(e)}")
     
     def get_asset(self, asset_id: str, width: Optional[int] = None, height: Optional[int] = None, format: str = "webp", quality: int = 85, fit: str = "inside") -> Dict[str, Any]:
-        """Get optimized asset with transformations"""
+        """Get optimized asset with transformations and caching"""
         url = f"{self.base_url}/assets/{asset_id}"
         params = {}
-        
+
         if width:
             params["width"] = width
         if height:
@@ -302,17 +460,32 @@ class KulturpoolClient:
             params["quality"] = quality
         if fit in ["inside", "outside", "cover", "fill"]:
             params["fit"] = fit
-        
+
+        # Check cache first (30 minute TTL for assets - moderate caching)
+        cached_response = response_cache.get(url, params)
+        if cached_response:
+            logger.debug("Cache hit for asset request")
+            return cached_response
+
         try:
+            # Direct GET request (simplified approach based on audit findings)
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
-            return {
+            logger.debug("Asset metadata retrieved via GET request")
+
+            asset_data = {
                 "asset_id": asset_id,
                 "url": response.url,
                 "content_type": response.headers.get('content-type', ''),
                 "content_length": response.headers.get('content-length', ''),
                 "transformations": params
             }
+
+            # Cache successful response (24 hours - assets rarely change)
+            response_cache.set(url, params, asset_data, 86400.0)  # 24 hours
+            logger.debug("Response cached for asset request (24h TTL)")
+
+            return asset_data
         except requests.Timeout:
             raise ValueError("API request timed out")
         except requests.RequestException as e:
@@ -329,7 +502,7 @@ api_client = KulturpoolClient()
 class KulturpoolExploreParams(BaseModel):
     """Parameters for kulturpool_explore tool"""
     query: str = Field(..., min_length=1, max_length=500)
-    max_examples: int = Field(default=5, ge=1, le=10)
+    max_examples: int = Field(default=10, ge=1, le=10)
     
     @field_validator('query')
     @classmethod  
@@ -654,7 +827,7 @@ async def kulturpool_explore_handler(arguments: Dict[str, Any]) -> List[TextCont
     # Build API request parameters
     api_params = {
         'q': params.query,
-        'per_page': 50,  # Get enough for good facet analysis
+        'per_page': 30,  # QA-compromise: maintains facet fidelity without prior 50-item overhead
         'facet_by': 'dataProvider,edmType,dateMin,dateMax',
         'include_fields': 'id,title,creator,dataProvider,edmType,previewImage,isShownAt,isShownBy,object,iiifManifest,dateMin,dateMax,subject,description'
     }
